@@ -33,12 +33,19 @@ A comprehensive Python SDK for copying scans between database instances, analyzi
    cd MATESTS
    ```
 
-2. **Install Python dependencies:**
+2. **Set up configuration files:**
+   ```bash
+   # Copy template files (these contain no sensitive data)
+   cp config.py.template config.py
+   cp config.json.template config.json
+   ```
+
+3. **Install Python dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Run the SDK:**
+4. **Run the SDK:**
    ```bash
    python scanCopySDK.py
    ```
@@ -70,9 +77,11 @@ MATESTS/
 ├── copyScans.py            # Original scan copying script
 ├── copyScanUpdated.py      # Updated scan copying script
 ├── scanDataAnalysis.py     # Analysis functions
-├── config.py               # Configuration template
+├── config.py.template      # Configuration template (safe to commit)
+├── config.json.template    # JSON configuration template (safe to commit)
 ├── requirements.txt        # Python dependencies
 ├── README.md               # This file
+├── .gitignore              # Excludes sensitive files
 └── *.csv                   # Generated analysis files
 ```
 

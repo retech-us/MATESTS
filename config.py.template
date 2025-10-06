@@ -1,0 +1,26 @@
+"""
+Configuration file for scan copying and analysis scripts
+This file will be automatically updated by the SDK with user-provided values
+"""
+
+# Source Database Configuration
+SOURCE_INSTANCE = ''
+SOURCE_DB_PASSWORD = ''
+SOURCE_USERNAME = ''
+SOURCE_PASSWORD = ''
+
+# Target Database Configuration
+TARGET_INSTANCE = ''
+TARGET_DB_PASSWORD = ''
+TARGET_USERNAME = ''
+TARGET_PASSWORD = ''
+
+# Scan Configuration
+SCAN_IDS_FOR_COPYING = ()
+
+TARGET_STORE_ID = None
+
+# Analysis Configuration
+ANALYSIS_START_DATE = None  # Format: 'YYYY-MM-DD' or None for no filter
+ANALYSIS_END_DATE = None    # Format: 'YYYY-MM-DD' or None for no filter
+ANALYSIS_STORE_ID = None    # Store ID filter for analysis or None for no filter
