@@ -71,7 +71,13 @@ def get_scan_data(instance_name: str, db_password: str, scan_ids: tuple):
                     
                     -- Planogram details
                     p."id" as planogram_id,
-                    p."name" as planogram_name
+                    p."name" as planogram_name,
+                    
+                    -- Majority v2 logs data
+                    mv2."id" as majority_v2_id,
+                    mv2."store_planogram_id" as majority_store_planogram_id,
+                    mv2."scan_created_date" as majority_created_at,
+                    mv2."data" as majority_data
                     
                 FROM "realograms_implementation_scan" s
                 
@@ -103,6 +109,15 @@ def get_scan_data(instance_name: str, db_password: str, scan_ids: tuple):
                 -- Planogram
                 LEFT JOIN "planograms_implementation_planogram" p
                     ON pcr."planogram_id" = p."id"
+                
+                -- Majority v2 logs (join on store_planogram_id, get the latest record)
+                LEFT JOIN LATERAL (
+                    SELECT mv2."id", mv2."store_planogram_id", mv2."scan_created_date", mv2."data"
+                    FROM "planograms_compliance_majorityv2log" mv2
+                    WHERE mv2."store_planogram_id" = pcr."store_planogram_id"
+                    ORDER BY mv2."scan_created_date" DESC
+                    LIMIT 1
+                ) mv2 ON true
                 
                 WHERE s."id" IN ({scan_ids_str})
                 ORDER BY s."id";
@@ -177,6 +192,17 @@ def process_scan_data(scan_data, additional_sections_data):
             except:
                 compliance_rates = {}
         
+        # Extract map_by values from majority_data JSONB
+        map_by_values = []
+        if row['majority_data']:
+            try:
+                majority_data = row['majority_data'] if isinstance(row['majority_data'], dict) else json.loads(row['majority_data'])
+                for key, value in majority_data.items():
+                    if isinstance(value, dict) and 'map_by' in value:
+                        map_by_values.append(value['map_by'])
+            except:
+                map_by_values = []
+        
         # Check if section is additional
         key = f"{row['scan_id']}_{row['section_id']}"
         is_additional_section = additional_sections_lookup.get(key, False)
@@ -218,7 +244,12 @@ def process_scan_data(scan_data, additional_sections_data):
             'sequence_compliance_rate': row['sequence_compliance_rate'],
             'initial_pre_compliance': row['initial_pre_compliance'],
             'spc_initial_pre_compliance': row['spc_initial_pre_compliance'],
-            'compliance_rates_json': json.dumps(compliance_rates) if compliance_rates else None
+            'compliance_rates_json': json.dumps(compliance_rates) if compliance_rates else None,
+            'majority_v2_id': row['majority_v2_id'],
+            'majority_store_planogram_id': row['majority_store_planogram_id'],
+            'majority_created_at': row['majority_created_at'],
+            'majority_data': json.dumps(row['majority_data']) if row['majority_data'] else None,
+            'map_by_values': ', '.join(map_by_values) if map_by_values else None
         }
         
         processed_data.append(processed_row)
@@ -418,7 +449,12 @@ def create_detailed_csv_report(processed_data, filename_prefix="scan_details", o
         'post_compliance', # POST POG
         'pre_osa',         # PRE OSA
         'post_osa',        # POST OSA
-        'compliance_rates_json'  # JSONB data for counts
+        'compliance_rates_json',  # JSONB data for counts
+        'majority_v2_id',  # Majority v2 logs ID
+        'majority_store_planogram_id',  # Store POG ID from majority v2
+        'majority_created_at',  # Majority v2 creation timestamp
+        'majority_data',  # Majority v2 data
+        'map_by_values'  # Map by values from majority v2 data
     ]
     
     # Filter DataFrame to only include detailed columns

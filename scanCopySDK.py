@@ -11,7 +11,7 @@ import pandas as pd
 import glob
 from datetime import datetime
 from getpass import getpass
-from config import *
+import config
 
 # Clipboard functionality removed as requested
 
@@ -111,12 +111,37 @@ class ScanCopySDK:
             traceback.print_exc()
         
     def step1_configuration(self):
-        """Step 1: Collect configuration details from user"""
+        """Step 1: Collect configuration details from user or use existing config"""
         print("=" * 60)
         print("STEP 1: CONFIGURATION")
         print("=" * 60)
         
         try:
+            # Try to load existing configuration first from config.json
+            if os.path.exists('config.json'):
+                with open('config.json', 'r') as f:
+                    config_data = json.load(f)
+                
+                # Check if config has values
+                has_config = (config_data.get('SOURCE_INSTANCE') and config_data.get('SOURCE_DB_PASSWORD') and 
+                             config_data.get('SOURCE_USERNAME') and config_data.get('SOURCE_PASSWORD') and 
+                             config_data.get('TARGET_INSTANCE') and config_data.get('TARGET_DB_PASSWORD') and 
+                             config_data.get('TARGET_USERNAME') and config_data.get('TARGET_PASSWORD'))
+                
+                if has_config:
+                    print("✅ Found existing configuration in config.json")
+                    print(f"   Source Instance: {config_data.get('SOURCE_INSTANCE')}")
+                    print(f"   Target Instance: {config_data.get('TARGET_INSTANCE')}")
+                    print(f"   Source Username: {config_data.get('SOURCE_USERNAME')}")
+                    print(f"   Target Username: {config_data.get('TARGET_USERNAME')}")
+                    
+                    use_existing = input("\nUse existing configuration? (y/n): ").strip().lower()
+                    if use_existing in ['y', 'yes']:
+                        # Use existing configuration
+                        self.config = config_data
+                        print("✅ Using existing configuration")
+                        return True
+            
             print("🔧 Please enter your database configuration details:")
             print()
             
@@ -237,10 +262,22 @@ class ScanCopySDK:
                 print("❌ Invalid choice. Please enter 1 or 2.")
     
     def step2_get_source_scan_ids(self):
-        """Step 2: Get source scan IDs from user"""
+        """Step 2: Get source scan IDs from user or use existing config"""
         print("\n" + "=" * 60)
         print("STEP 2: SOURCE SCAN IDs")
         print("=" * 60)
+        
+        # Check if config has scan IDs
+        import config
+        if config.SCAN_IDS_FOR_COPYING:
+            print(f"✅ Found existing scan IDs in config.py: {list(config.SCAN_IDS_FOR_COPYING)}")
+            use_existing = input("Use existing scan IDs? (y/n): ").strip().lower()
+            if use_existing in ['y', 'yes']:
+                self.source_scan_ids = list(config.SCAN_IDS_FOR_COPYING)
+                print(f"✅ Using existing scan IDs: {self.source_scan_ids}")
+                # Create initial mapping file with source scan IDs
+                self.create_initial_mapping_file()
+                return True
         
         while True:
             scan_input = input("Enter source scan IDs (comma-separated): ").strip()
@@ -251,9 +288,46 @@ class ScanCopySDK:
             try:
                 self.source_scan_ids = self._parse_scan_ids(scan_input)
                 print(f"✅ Source scan IDs: {self.source_scan_ids}")
+                # Create initial mapping file with source scan IDs
+                self.create_initial_mapping_file()
                 return True
             except ValueError as e:
                 print(f"❌ {e}")
+    
+    def create_initial_mapping_file(self):
+        """Create initial mapping file with source scan IDs (target IDs will be empty initially)"""
+        try:
+            import csv
+            from datetime import datetime
+            
+            # Create initial mapping file
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            mapping_filename = f"initial_scan_mapping_{timestamp}.csv"
+            
+            with open(mapping_filename, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['Source_Scan_ID', 'Target_Scan_ID'])
+                
+                # Write source scan IDs with empty target IDs
+                for scan_id in self.source_scan_ids:
+                    writer.writerow([scan_id, ''])
+            
+            print(f"📄 Created initial mapping file: {mapping_filename}")
+            print(f"   Source scan IDs: {self.source_scan_ids}")
+            print(f"   Target scan IDs: (to be filled after copy operation)")
+            
+            # Move to run folder if it exists
+            if hasattr(self, 'run_folder') and self.run_folder:
+                try:
+                    import shutil
+                    dest_path = os.path.join(self.run_folder, mapping_filename)
+                    shutil.move(mapping_filename, dest_path)
+                    print(f"📁 Moved to run folder: {dest_path}")
+                except Exception as e:
+                    print(f"⚠️  Could not move to run folder: {e}")
+            
+        except Exception as e:
+            print(f"⚠️  Error creating initial mapping file: {e}")
     
     def _parse_scan_ids(self, text):
         """Parse scan IDs from text"""
@@ -273,10 +347,20 @@ class ScanCopySDK:
         return scan_ids
     
     def step3_get_target_store(self):
-        """Step 3: Get target store ID from user"""
+        """Step 3: Get target store ID from user or use existing config"""
         print("\n" + "=" * 60)
         print("STEP 3: TARGET STORE")
         print("=" * 60)
+        
+        # Check if config has target store ID
+        import config
+        if config.TARGET_STORE_ID is not None:
+            print(f"✅ Found existing target store ID in config: {config.TARGET_STORE_ID}")
+            use_existing = input("Use existing target store ID? (y/n): ").strip().lower()
+            if use_existing in ['y', 'yes']:
+                self.target_store_id = config.TARGET_STORE_ID
+                print(f"✅ Using existing target store ID: {self.target_store_id}")
+                return True
         
         while True:
             store_input = input("Enter target store ID: ").strip()
@@ -299,10 +383,15 @@ class ScanCopySDK:
         
         # Ask user to choose script
         while True:
-            choice = input("Choose script to run:\n1. copyScans.py\n2. copyScanUpdated.py\nEnter choice (1 or 2): ").strip()
-            if choice in ['1', '2']:
+            choice = input("Choose an option:\n1. copyScans.py\n2. copyScanUpdated.py\n3. Skip copy operation (mapping file already created)\nEnter choice (1, 2, or 3): ").strip()
+            if choice in ['1', '2', '3']:
                 break
-            print("❌ Please enter 1 or 2")
+            print("❌ Please enter 1, 2, or 3")
+        
+        if choice == '3':
+            print("✅ Skipping copy operation")
+            print("📄 Using existing initial mapping file")
+            return True
         
         script_name = "copyScans.py" if choice == '1' else "copyScanUpdated.py"
         print(f"✅ Selected script: {script_name}")
@@ -377,6 +466,16 @@ class ScanCopySDK:
             # Read current config.py
             with open('config.py', 'r') as f:
                 content = f.read()
+            
+            # Update database credentials
+            content = self.update_config_value(content, 'SOURCE_INSTANCE', f"'{self.config['SOURCE_INSTANCE']}'")
+            content = self.update_config_value(content, 'SOURCE_DB_PASSWORD', f"'{self.config['SOURCE_DB_PASSWORD']}'")
+            content = self.update_config_value(content, 'SOURCE_USERNAME', f"'{self.config['SOURCE_USERNAME']}'")
+            content = self.update_config_value(content, 'SOURCE_PASSWORD', f"'{self.config['SOURCE_PASSWORD']}'")
+            content = self.update_config_value(content, 'TARGET_INSTANCE', f"'{self.config['TARGET_INSTANCE']}'")
+            content = self.update_config_value(content, 'TARGET_DB_PASSWORD', f"'{self.config['TARGET_DB_PASSWORD']}'")
+            content = self.update_config_value(content, 'TARGET_USERNAME', f"'{self.config['TARGET_USERNAME']}'")
+            content = self.update_config_value(content, 'TARGET_PASSWORD', f"'{self.config['TARGET_PASSWORD']}'")
             
             # Update scan IDs
             content = self.update_config_value(content, 'SCAN_IDS_FOR_COPYING', f"({', '.join(map(str, self.source_scan_ids))},)")
@@ -587,6 +686,8 @@ class ScanCopySDK:
                     'target_oos_count': target_row.get('oos_count', 0),
                     'source_hole_count': source_row.get('hole_count', 0),
                     'target_hole_count': target_row.get('hole_count', 0),
+                    'source_map_by_values': source_row.get('map_by_values', ''),
+                    'target_map_by_values': target_row.get('map_by_values', ''),
                     'comment': ''
                 }
                 
