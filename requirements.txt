@@ -1,0 +1,24 @@
+# Scan Copy SDK Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+pandas>=1.5.0
+numpy>=1.21.0
+psycopg[binary]>=3.0.0
+requests>=2.28.0
+
+# Clipboard support removed as requested
+
+# Excel support
+openpyxl>=3.0.0
+
+# JSON handling (built-in, but listed for completeness)
+# json - built-in module
+
+# Date/time handling (built-in, but listed for completeness)
+# datetime - built-in module
+
+# File system operations (built-in, but listed for completeness)
+# os - built-in module
+# sys - built-in module
+# subprocess - built-in module
