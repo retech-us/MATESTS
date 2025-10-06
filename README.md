@@ -26,79 +26,54 @@ A comprehensive Python SDK for copying scans between database instances, analyzi
 - Python 3.8 or higher
 - Access to source and target database instances
 
-### Quick Install
-```bash
-# Clone or download the project files
-# Navigate to the project directory
-cd MATESTS
+### Steps
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/retech-us/MATESTS.git
+   cd MATESTS
+   ```
 
-# Install dependencies
-pip install -r requirements.txt
-```
+2. **Install Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-### Manual Installation
-```bash
-pip install pandas numpy psycopg[binary] requests pyperclip openpyxl
-```
-
-## Configuration
-
-### Interactive Configuration
-The SDK will prompt you for all required configuration details when you run it. No need to manually create configuration files!
-
-**Required Information:**
-- Source Database Instance (e.g., albt)
-- Source Database Password
-- Source Username
-- Source Password
-- Target Database Instance (e.g., stgalbt)
-- Target Database Password
-- Target Username
-- Target Password
-
-The SDK will automatically save your configuration to `config.json` and update `config.py` as needed.
+3. **Run the SDK:**
+   ```bash
+   python scanCopySDK.py
+   ```
 
 ## Usage
 
-### Main SDK Workflow
-```bash
-python scanCopySDK.py
-```
+### Quick Start
+1. **Run the SDK**: `python scanCopySDK.py`
+2. **Follow the interactive prompts** to configure your database connections
+3. **Enter scan IDs** you want to copy and analyze
+4. **Choose target store** for the copied scans
+5. **Select copy script** (copyScans.py or copyScanUpdated.py)
+6. **Review generated reports** in the results folder
 
-This will guide you through:
-1. **Results Folder**: Creates timestamped folder for this run's results
-2. **Configuration**: Enter database credentials interactively
+### Workflow Steps
+1. **Configuration**: Enter database credentials and settings
+2. **Results Path**: Choose where to save analysis results
 3. **Source Scan IDs**: Enter comma-separated scan IDs to copy
 4. **Target Store**: Enter target store ID
-5. **Copy Script**: Choose between `copyScans.py` or `copyScanUpdated.py`
-6. **Target Scan IDs**: Enter resulting target scan IDs
-
-### Highlighted Analysis
-The highlighted analysis is now integrated into the main SDK workflow. It will:
-- Compare source and target scan data
-- Generate color-coded Excel reports
-- Provide clipboard copying options
-
-### Direct Scan Data Analysis
-```bash
-python scanDataAnalysis.py
-```
-
-This will generate detailed scan analysis CSV files.
+5. **Copy Scripts**: Choose between copyScans.py or copyScanUpdated.py
+6. **Target Scan IDs**: Enter target scan IDs for analysis
+7. **Analysis**: Generate comprehensive CSV and Excel reports
 
 ## File Structure
 
 ```
 MATESTS/
-├── scanCopySDK.py              # Main SDK workflow
-├── scanDataAnalysis.py         # Scan data analysis
-├── copyScans.py                # Original scan copying script
-├── copyScanUpdated.py          # Updated scan copying script
-├── config.py                   # Python configuration (auto-updated)
-├── config.json                 # Database configuration
-├── requirements.txt            # Python dependencies
-├── README.md                   # This file
-└── *.csv                       # Generated analysis files
+├── scanCopySDK.py          # Main SDK with interactive workflow
+├── copyScans.py            # Original scan copying script
+├── copyScanUpdated.py      # Updated scan copying script
+├── scanDataAnalysis.py     # Analysis functions
+├── config.py               # Configuration template
+├── requirements.txt        # Python dependencies
+├── README.md               # This file
+└── *.csv                   # Generated analysis files
 ```
 
 ## Color Coding
@@ -130,73 +105,83 @@ The SDK allows you to choose where to save your test results:
 
 The SDK generates organized results in timestamped folders:
 
+### Generated Files:
+- **Source Scan Details CSV**: Detailed analysis of source scans
+- **Target Scan Details CSV**: Detailed analysis of target scans (if provided)
+- **Analysis CSV with Comments**: Combined analysis with highlighting comments
+- **Highlighted Excel Report**: Color-coded Excel file for easy review
+- **Scan Mapping CSV**: Mapping between source and target scan IDs
+
+### File Naming Convention:
+- `source_scandetails_YYYYMMDD_HHMMSS.csv`
+- `target_scandetails_YYYYMMDD_HHMMSS.csv`
+- `analysis_with_comments_YYYYMMDD_HHMMSS.csv`
+- `analysis_with_comments_YYYYMMDD_HHMMSS_highlighted.xlsx`
+
+## Configuration
+
+### Database Configuration
+The SDK will prompt you for:
+- Source Database Instance
+- Source Database Password
+- Source Username
+- Source Password
+- Target Database Instance
+- Target Database Password
+- Target Username
+- Target Password
+
+### Security Notes
+- All passwords are masked during input
+- Credentials are not stored permanently
+- Configuration is collected interactively for security
+
+## Dependencies
+
+### Required Python Packages:
+- `pandas>=1.5.0` - Data manipulation and analysis
+- `numpy>=1.21.0` - Numerical computing
+- `psycopg[binary]>=3.0.0` - PostgreSQL database adapter
+- `requests>=2.28.0` - HTTP library for API calls
+- `openpyxl>=3.0.0` - Excel file generation
+
+### Installation:
+```bash
+pip install -r requirements.txt
 ```
-testResults/
-└── run_YYYYMMDD_HHMMSS/
-    ├── scan_mapping_updated_YYYYMMDD_HHMMSS.csv
-    ├── source_scandetails_YYYYMMDD_HHMMSS.csv
-    ├── target_scandetails_YYYYMMDD_HHMMSS.csv
-    ├── analysis_with_comments_YYYYMMDD_HHMMSS.csv
-    └── analysis_with_comments_YYYYMMDD_HHMMSS_highlighted.xlsx
-```
-
-### File Descriptions:
-- **scan_mapping_updated_*.csv**: Source to target scan ID mappings
-- **source_scandetails_*.csv**: Detailed source scan data with counts
-- **target_scandetails_*.csv**: Detailed target scan data with counts
-- **analysis_with_comments_*.csv**: Combined analysis with difference comments
-- **analysis_with_comments_*_highlighted.xlsx**: Color-coded Excel report
-
-## Data Fields
-
-The analysis includes the following key fields:
-
-- **Scan Information**: scan_id, store_name, category_name
-- **Planogram Data**: store_planogram_id, planogram_name
-- **Section Data**: section_id, section_name, is_additional_section
-- **Compliance Metrics**: pre_pog_percentage, post_pog_percentage
-- **OSA Metrics**: pre_osa_percentage, post_osa_percentage
-- **Item Counts**: 
-  - `ok_count`: Count of correctly placed items
-  - `wandering_count`: Count of items in wrong positions
-  - `oos_count`: Count of out-of-stock items (missing)
-  - `hole_count`: Count of empty spaces (holes)
-- **Difference Flags**: Various boolean flags for identifying differences
 
 ## Troubleshooting
 
-### Common Issues
+### Common Issues:
+1. **Database Connection Errors**: Verify credentials and network access
+2. **Permission Errors**: Ensure you have write access to the results directory
+3. **Missing Dependencies**: Run `pip install -r requirements.txt`
+4. **File Not Found**: Check that all required files are in the correct directory
 
-1. **Database Connection Errors**
-   - Verify database credentials in `config.json`
-   - Check network connectivity to database instances
+### Error Messages:
+- **"Password authentication failed"**: Check database credentials
+- **"Permission denied creating folder"**: Check directory permissions
+- **"No scan mapping CSV file found"**: Ensure copy script completed successfully
 
-2. **Missing Dependencies**
-   - Run `pip install -r requirements.txt`
-   - Ensure Python 3.8+ is installed
+## Contributing
 
-3. **Clipboard Issues**
-   - Ensure `pyperclip` is installed: `pip install pyperclip`
-   - On Linux, may need additional packages for clipboard support
-
-4. **Excel Export Issues**
-   - Ensure `openpyxl` is installed: `pip install openpyxl`
-
-### Error Messages
-
-- `❌ Configuration not found`: Check `config.json` exists and is valid
-- `❌ Database connection failed`: Verify credentials and connectivity
-- `❌ No scan data found`: Check scan IDs exist in database
-- `❌ Clipboard error`: Install pyperclip or check system clipboard
-
-## Support
-
-For issues or questions:
-1. Check the troubleshooting section above
-2. Verify all dependencies are installed
-3. Check database connectivity and credentials
-4. Review error messages for specific guidance
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
 
 ## License
 
-This project is for internal use. Please ensure compliance with your organization's data handling policies.
+This project is part of the retech-us organization and follows the organization's licensing terms.
+
+## Support
+
+For support and questions:
+- Create an issue in this repository
+- Contact the development team
+- Check the troubleshooting section above
+
+---
+
+**Note**: This SDK is designed for internal use within the retech-us organization for scan copying and analysis workflows.
