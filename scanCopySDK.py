@@ -686,8 +686,6 @@ class ScanCopySDK:
                     'target_oos_count': target_row.get('oos_count', 0),
                     'source_hole_count': source_row.get('hole_count', 0),
                     'target_hole_count': target_row.get('hole_count', 0),
-                    'source_map_by_values': source_row.get('map_by_values', ''),
-                    'target_map_by_values': target_row.get('map_by_values', ''),
                     'comment': ''
                 }
                 
@@ -708,6 +706,9 @@ class ScanCopySDK:
                     analysis_row['comment'] = 'Target Has Higher POG% Than Source'
                 else:
                     analysis_row['comment'] = 'No Issues'
+                
+                # Add MAv2_Map_by column with target map_by values only
+                analysis_row['MAv2_Map_by'] = target_row.get('map_by_values', '')
                 
                 analysis_data.append(analysis_row)
             
