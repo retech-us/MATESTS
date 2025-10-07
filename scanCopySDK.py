@@ -279,20 +279,137 @@ class ScanCopySDK:
                 self.create_initial_mapping_file()
                 return True
         
+        # Ask user to choose input method
+        print("\nChoose how to get source scan IDs:")
+        print("1. Enter scan IDs manually (comma-separated)")
+        print("2. Get scan IDs automatically from database (by date and store ID)")
+        print("3. Skip source scan IDs (create empty mapping file)")
+        
         while True:
-            scan_input = input("Enter source scan IDs (comma-separated): ").strip()
-            if not scan_input:
-                print("❌ Please enter at least one scan ID")
-                continue
-            
-            try:
-                self.source_scan_ids = self._parse_scan_ids(scan_input)
-                print(f"✅ Source scan IDs: {self.source_scan_ids}")
-                # Create initial mapping file with source scan IDs
+            choice = input("Enter choice (1, 2, or 3): ").strip()
+            if choice == '1':
+                # Manual input
+                while True:
+                    scan_input = input("Enter source scan IDs (comma-separated): ").strip()
+                    if not scan_input:
+                        print("❌ Please enter at least one scan ID")
+                        continue
+                    
+                    try:
+                        self.source_scan_ids = self._parse_scan_ids(scan_input)
+                        print(f"✅ Source scan IDs: {self.source_scan_ids}")
+                        # Create initial mapping file with source scan IDs
+                        self.create_initial_mapping_file()
+                        return True
+                    except ValueError as e:
+                        print(f"❌ {e}")
+                        
+            elif choice == '2':
+                # Automatic retrieval from database
+                try:
+                    self.source_scan_ids = self.get_scan_ids_from_database()
+                    if self.source_scan_ids:
+                        print(f"✅ Retrieved {len(self.source_scan_ids)} scan IDs from database")
+                        print(f"✅ Source scan IDs: {self.source_scan_ids}")
+                        # Create initial mapping file with source scan IDs
+                        self.create_initial_mapping_file()
+                        return True
+                    else:
+                        print("❌ No scan IDs found for the specified criteria")
+                        continue
+                except Exception as e:
+                    print(f"❌ Error retrieving scan IDs from database: {e}")
+                    continue
+                    
+            elif choice == '3':
+                # Skip source scan IDs - create empty mapping file
+                self.source_scan_ids = []
+                print("✅ Skipping source scan IDs - will create empty mapping file")
+                # Create initial mapping file (empty)
                 self.create_initial_mapping_file()
                 return True
-            except ValueError as e:
-                print(f"❌ {e}")
+            else:
+                print("❌ Invalid choice. Please enter 1, 2, or 3.")
+    
+    def get_scan_ids_from_database(self):
+        """Get scan IDs from realograms_implementation_scan table based on date and store_id"""
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+            from datetime import datetime
+            
+            print("\n📊 Database Query for Scan IDs")
+            print("=" * 40)
+            
+            # Get date from user
+            while True:
+                date_input = input("Enter scan date (YYYY-MM-DD format): ").strip()
+                if not date_input:
+                    print("❌ Please enter a date")
+                    continue
+                
+                try:
+                    # Validate date format
+                    scan_date = datetime.strptime(date_input, '%Y-%m-%d').date()
+                    break
+                except ValueError:
+                    print("❌ Invalid date format. Please use YYYY-MM-DD format (e.g., 2024-01-15)")
+                    continue
+            
+            # Get store ID from user
+            while True:
+                store_input = input("Enter store ID: ").strip()
+                if not store_input:
+                    print("❌ Please enter a store ID")
+                    continue
+                
+                try:
+                    store_id = int(store_input)
+                    break
+                except ValueError:
+                    print("❌ Please enter a valid number for store ID")
+                    continue
+            
+            print(f"\n🔍 Querying database for scans on {scan_date} in store {store_id}...")
+            
+            # Connect to source database
+            with psycopg.connect(
+                user='proxyuser',
+                password=self.config['SOURCE_DB_PASSWORD'],
+                host=f"{self.config['SOURCE_INSTANCE']}-maint.rebotics.net",
+                port='5432',
+                dbname=self.config['SOURCE_INSTANCE'],
+                row_factory=dict_row
+            ) as connection:
+                with connection.cursor() as cursor:
+                    # Query to get scan IDs for the specified date and store
+                    query = """
+                        SELECT id, created_at, store_id
+                        FROM realograms_implementation_scan 
+                        WHERE DATE(created_at) = %s 
+                        AND store_id = %s
+                        ORDER BY created_at DESC;
+                    """
+                    
+                    cursor.execute(query, (scan_date, store_id))
+                    results = cursor.fetchall()
+                    
+                    if results:
+                        scan_ids = [row['id'] for row in results]
+                        print(f"✅ Found {len(scan_ids)} scans:")
+                        for i, row in enumerate(results[:10]):  # Show first 10
+                            print(f"   {i+1}. Scan ID: {row['id']}, Created: {row['created_at']}")
+                        if len(results) > 10:
+                            print(f"   ... and {len(results) - 10} more scans")
+                        
+                        return scan_ids
+                    else:
+                        print(f"❌ No scans found for date {scan_date} in store {store_id}")
+                        return []
+                        
+        except Exception as e:
+            print(f"❌ Database error: {e}")
+            return []
     
     def create_initial_mapping_file(self):
         """Create initial mapping file with source scan IDs (target IDs will be empty initially)"""
@@ -308,12 +425,19 @@ class ScanCopySDK:
                 writer = csv.writer(csvfile)
                 writer.writerow(['Source_Scan_ID', 'Target_Scan_ID'])
                 
-                # Write source scan IDs with empty target IDs
-                for scan_id in self.source_scan_ids:
-                    writer.writerow([scan_id, ''])
+                # Write source scan IDs with empty target IDs (even if empty list)
+                if self.source_scan_ids:
+                    for scan_id in self.source_scan_ids:
+                        writer.writerow([scan_id, ''])
+                else:
+                    # Add a placeholder row if no source scan IDs
+                    writer.writerow(['', ''])
             
             print(f"📄 Created initial mapping file: {mapping_filename}")
-            print(f"   Source scan IDs: {self.source_scan_ids}")
+            if self.source_scan_ids:
+                print(f"   Source scan IDs: {self.source_scan_ids}")
+            else:
+                print(f"   Source scan IDs: (empty - ready for manual entry)")
             print(f"   Target scan IDs: (to be filled after copy operation)")
             
             # Move to run folder if it exists
@@ -446,19 +570,165 @@ class ScanCopySDK:
                 print(f"✅ Using auto-extracted target scan IDs: {self.target_scan_ids}")
                 return True
         
-        # Manual input if auto-extraction not used or not available
+        # Ask user to choose input method
+        print("\nChoose how to get target scan IDs:")
+        print("1. Enter scan IDs manually (comma-separated)")
+        print("2. Select from mapping CSV file")
+        
         while True:
-            scan_input = input("Enter target scan IDs (comma-separated): ").strip()
-            if not scan_input:
-                print("❌ Please enter at least one scan ID")
-                continue
+            choice = input("Enter choice (1 or 2): ").strip()
+            if choice == '1':
+                # Manual input
+                while True:
+                    scan_input = input("Enter target scan IDs (comma-separated): ").strip()
+                    if not scan_input:
+                        print("❌ Please enter at least one scan ID")
+                        continue
+                    
+                    try:
+                        self.target_scan_ids = self._parse_scan_ids(scan_input)
+                        print(f"✅ Target scan IDs: {self.target_scan_ids}")
+                        return True
+                    except ValueError as e:
+                        print(f"❌ {e}")
+                        
+            elif choice == '2':
+                # Select from mapping CSV file
+                try:
+                    self.target_scan_ids = self.select_target_scan_ids_from_mapping()
+                    if self.target_scan_ids:
+                        print(f"✅ Selected target scan IDs: {self.target_scan_ids}")
+                        return True
+                    else:
+                        print("❌ No target scan IDs selected")
+                        continue
+                except Exception as e:
+                    print(f"❌ Error reading mapping file: {e}")
+                    continue
+            else:
+                print("❌ Invalid choice. Please enter 1 or 2.")
+    
+    def select_target_scan_ids_from_mapping(self):
+        """Select target scan IDs from the mapping CSV file"""
+        try:
+            import csv
+            import glob
             
-            try:
-                self.target_scan_ids = self._parse_scan_ids(scan_input)
-                print(f"✅ Target scan IDs: {self.target_scan_ids}")
-                return True
-            except ValueError as e:
-                print(f"❌ {e}")
+            # Find mapping CSV files in the run folder
+            mapping_files = []
+            if hasattr(self, 'run_folder') and self.run_folder:
+                # Look for updated mapping files first (with target scan IDs)
+                updated_pattern = os.path.join(self.run_folder, "scan_mapping_updated_*.csv")
+                mapping_files.extend(glob.glob(updated_pattern))
+                
+                # Fallback to initial mapping files if no updated ones found
+                if not mapping_files:
+                    initial_pattern = os.path.join(self.run_folder, "initial_scan_mapping_*.csv")
+                    mapping_files.extend(glob.glob(initial_pattern))
+            
+            # Also look in current directory as fallback
+            if not mapping_files:
+                mapping_files.extend(glob.glob("scan_mapping_updated_*.csv"))
+                if not mapping_files:
+                    mapping_files.extend(glob.glob("initial_scan_mapping_*.csv"))
+            
+            if not mapping_files:
+                print("❌ No mapping CSV files found")
+                return []
+            
+            # Prefer updated mapping files over initial ones, then use most recent
+            updated_files = [f for f in mapping_files if "scan_mapping_updated_" in f]
+            if updated_files:
+                mapping_file = max(updated_files, key=os.path.getctime)
+                print(f"📄 Using updated mapping file: {os.path.basename(mapping_file)}")
+            else:
+                mapping_file = max(mapping_files, key=os.path.getctime)
+                print(f"📄 Using initial mapping file: {os.path.basename(mapping_file)}")
+            
+            # Read the mapping file
+            with open(mapping_file, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                rows = list(reader)
+            
+            if not rows:
+                print("❌ Mapping file is empty")
+                return []
+            
+            # Display available target scan IDs
+            print("\n📋 Available target scan IDs in mapping file:")
+            print("=" * 50)
+            target_ids = []
+            for i, row in enumerate(rows, 1):
+                source_id = row.get('Source_Scan_ID', '').strip()
+                target_id = row.get('Target_Scan_ID', '').strip()
+                
+                if target_id:  # Only show rows with target scan IDs
+                    print(f"{i:2d}. Source: {source_id} → Target: {target_id}")
+                    target_ids.append(int(target_id))
+                elif source_id:  # Show rows with source but no target
+                    print(f"{i:2d}. Source: {source_id} → Target: (empty)")
+            
+            if not target_ids:
+                print("❌ No target scan IDs found in mapping file")
+                print("💡 You may need to run the copy operation first to populate target IDs")
+                return []
+            
+            # Let user select which target IDs to use
+            print(f"\nFound {len(target_ids)} target scan IDs")
+            print("Choose an option:")
+            print("1. Use all target scan IDs")
+            print("2. Select specific target scan IDs")
+            
+            while True:
+                choice = input("Enter choice (1 or 2): ").strip()
+                if choice == '1':
+                    return target_ids
+                elif choice == '2':
+                    # Let user select specific IDs
+                    while True:
+                        selection = input(f"Enter target scan IDs to use (comma-separated, 1-{len(target_ids)}): ").strip()
+                        if not selection:
+                            print("❌ Please enter at least one selection")
+                            continue
+                        
+                        try:
+                            # Parse selection (could be indices or actual IDs)
+                            selected_values = [x.strip() for x in selection.split(',')]
+                            selected_ids = []
+                            
+                            for value in selected_values:
+                                if value.isdigit():
+                                    # Check if it's an index (1-based)
+                                    idx = int(value) - 1
+                                    if 0 <= idx < len(target_ids):
+                                        selected_ids.append(target_ids[idx])
+                                    else:
+                                        print(f"❌ Invalid index: {value}")
+                                        break
+                                else:
+                                    # Assume it's an actual scan ID
+                                    try:
+                                        scan_id = int(value)
+                                        if scan_id in target_ids:
+                                            selected_ids.append(scan_id)
+                                        else:
+                                            print(f"❌ Target scan ID {scan_id} not found in mapping")
+                                            break
+                                    except ValueError:
+                                        print(f"❌ Invalid scan ID: {value}")
+                                        break
+                            else:
+                                # All selections were valid
+                                return selected_ids
+                                
+                        except ValueError as e:
+                            print(f"❌ {e}")
+                else:
+                    print("❌ Invalid choice. Please enter 1 or 2.")
+                    
+        except Exception as e:
+            print(f"❌ Error reading mapping file: {e}")
+            return []
     
     def update_config_with_current_values(self):
         """Update config.py with current values"""
@@ -584,34 +854,28 @@ class ScanCopySDK:
             print(f"✅ Source scan details CSV: {source_csv}")
             
             # Create target CSV if target data exists
+            target_csv = None
             if processed_target_data:
                 target_csv = create_detailed_csv_report(processed_target_data, "target_scandetails", self.run_folder)
                 print(f"✅ Target scan details CSV: {target_csv}")
             
             # Create analysis CSV with comments and highlighting
-            if processed_target_data:
-                # Read the CSV files to get the complete data including counts
-                source_csv_path = os.path.join(self.run_folder, f"source_scandetails_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-                target_csv_path = os.path.join(self.run_folder, f"target_scandetails_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-                
-                # Find the actual CSV files that were created
-                import glob
-                source_csv_files = glob.glob(os.path.join(self.run_folder, "source_scandetails_*.csv"))
-                target_csv_files = glob.glob(os.path.join(self.run_folder, "target_scandetails_*.csv"))
-                
-                if source_csv_files and target_csv_files:
-                    # Use the most recent files
-                    source_csv_file = max(source_csv_files, key=os.path.getctime)
-                    target_csv_file = max(target_csv_files, key=os.path.getctime)
+            if processed_target_data and source_csv and target_csv:
+                # Use the actual file paths returned by create_detailed_csv_report
+                try:
+                    # Read the CSV files using the actual paths
+                    source_df = pd.read_csv(source_csv)
+                    target_df = pd.read_csv(target_csv)
                     
-                    # Read the CSV files
-                    source_df = pd.read_csv(source_csv_file)
-                    target_df = pd.read_csv(target_csv_file)
-                    
+                    # Create analysis CSV with comments
                     analysis_csv = self.create_analysis_csv_with_comments_from_dataframes(source_df, target_df)
                     print(f"✅ Analysis CSV with comments: {analysis_csv}")
-                else:
-                    print("⚠️  Could not find source/target CSV files for analysis")
+                except Exception as e:
+                    print(f"⚠️  Error reading CSV files: {e}")
+                    print(f"   Source CSV: {source_csv}")
+                    print(f"   Target CSV: {target_csv}")
+            else:
+                print("⚠️  Cannot create analysis CSV - missing source or target data")
             
             return True
             
@@ -707,8 +971,8 @@ class ScanCopySDK:
                 else:
                     analysis_row['comment'] = 'No Issues'
                 
-                # Add MAv2_Map_by column with target map_by values only
-                analysis_row['MAv2_Map_by'] = target_row.get('map_by_values', '')
+                # Add MAv2_Map_by column with target map_by value only
+                analysis_row['MAv2_Map_by'] = target_row.get('map_by_value', '')
                 
                 analysis_data.append(analysis_row)
             
@@ -799,6 +1063,14 @@ class ScanCopySDK:
                         'target_oos_count': target_row.get('oos_count', 0),
                         'source_hole_count': source_row.get('hole_count', 0),
                         'target_hole_count': target_row.get('hole_count', 0),
+                        'source_planogram_unique_count': source_row.get('planogram_unique_count', 0),
+                        'target_planogram_unique_count': target_row.get('planogram_unique_count', 0),
+                        'source_planogram_all_count': source_row.get('planogram_all_count', 0),
+                        'target_planogram_all_count': target_row.get('planogram_all_count', 0),
+                        'source_realogram_unique_count': source_row.get('realogram_unique_count', 0),
+                        'target_realogram_unique_count': target_row.get('realogram_unique_count', 0),
+                        'source_realogram_all_count': source_row.get('realogram_all_count', 0),
+                        'target_realogram_all_count': target_row.get('realogram_all_count', 0),
                         'comment': ''
                     }
                     
@@ -815,6 +1087,9 @@ class ScanCopySDK:
                     analysis_row['comment'] = 'Better Mapping (Higher Target POG)'
                 else:
                     analysis_row['comment'] = 'No Issues'
+                
+                # Add MAv2_Map_by column with target map_by value only
+                analysis_row['MAv2_Map_by'] = target_row.get('map_by_value', '')
                 
                 analysis_data.append(analysis_row)
             
