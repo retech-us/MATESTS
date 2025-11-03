@@ -10,6 +10,14 @@ import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import sys
+import io
+
+# Fix Windows console encoding to support Unicode characters
+if sys.platform == 'win32':
+    import codecs
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 def fetch_as_dict(cursor) -> typing.Tuple[typing.Dict[str, typing.Any], ...]:
     return tuple(cursor.fetchall())
@@ -91,7 +99,14 @@ def create_scan_threaded(scan_data: dict, source_scan_id: int, instance_name: st
         return source_scan_id, result
     except Exception as e:
         print(f"[ERROR] [Thread] Error creating scan for source {source_scan_id}: {e}")
-        print(f"[ERROR] [Thread] Scan data that failed: {scan_data}")
+        # Safely print scan data with Unicode handling
+        try:
+            import json
+            scan_data_str = json.dumps(scan_data, ensure_ascii=False, indent=2)
+            print(f"[ERROR] [Thread] Scan data that failed: {scan_data_str}")
+        except Exception as json_error:
+            print(f"[ERROR] [Thread] Could not serialize scan data for printing: {json_error}")
+            print(f"[ERROR] [Thread] Scan data type: {type(scan_data)}")
         raise
 
 def run_sql(sql: str, *, instance_name: str, db_password: str) -> typing.Any:

@@ -11,7 +11,14 @@ import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import sys
+import io
 from config import *
+
+# Fix Windows console encoding to support Unicode characters
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 def fetch_as_dict(cursor) -> typing.Tuple[typing.Dict[str, typing.Any], ...]:
     return tuple(cursor.fetchall())
@@ -109,7 +116,7 @@ def create_scan_threaded(scan_data: dict, source_scan_id: int, instance_name: st
         time.sleep(0.5)
         
         result = create_scan(data=scan_data, instance_name=instance_name, auth_token=auth_token)
-        print(f"[THREAD] ✅ Created scan {result} for source {source_scan_id}")
+        print(f"[THREAD] Created scan {result} for source {source_scan_id}")
         return source_scan_id, result
     except requests.exceptions.Timeout as e:
         print(f"[ERROR] [Thread] Timeout creating scan for source {source_scan_id}: {e}")
@@ -302,7 +309,7 @@ def run(*,
             data = deepcopy(scan_info['provided_values']['_raw_data'])
             
             # Remove the specified fields from the data (including task_id to prevent 400 errors)
-            fields_to_remove = ['category_id', 'section_id', 'store_planogram', 'aisle', 'task_id']
+            fields_to_remove = ['category_id', 'section_id', 'store_planogram', 'aisle', 'task_id', 'replace_id']
             for field in fields_to_remove:
                 if field in data:
                     del data[field]
