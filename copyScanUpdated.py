@@ -2,6 +2,7 @@ import datetime
 import typing
 import csv
 import os
+import json
 from copy import deepcopy
 from functools import cache
 import psycopg
@@ -29,7 +30,7 @@ def retry_with_exponential_backoff(max_retries=3, base_delay=1, max_delay=60, ba
         def wrapper(*args, **kwargs):
             last_exception = None
             start_time = time.time()
-            max_total_time = 300  # 5 minutes total timeout
+            max_total_time = 1800  # 30 minutes total timeout for large batches
             
             for attempt in range(max_retries + 1):
                 try:
@@ -81,9 +82,7 @@ def retry_with_exponential_backoff(max_retries=3, base_delay=1, max_delay=60, ba
 def download_file_threaded(file_id: int, instance_name: str, auth_token: str) -> tuple[int, tuple]:
     """Thread-safe wrapper for download_file function"""
     try:
-        print(f"[THREAD] Downloading file {file_id}...")
         result = download_file(file_id, instance_name=instance_name, auth_token=auth_token)
-        print(f"[THREAD] Downloaded file {file_id}")
         return file_id, result
     except Exception as e:
         print(f"[ERROR] [Thread] Error downloading file {file_id}: {e}")
@@ -92,14 +91,12 @@ def download_file_threaded(file_id: int, instance_name: str, auth_token: str) ->
 def upload_file_threaded(file_id: int, file_info: tuple, instance_name: str, auth_token: str) -> tuple[int, str]:
     """Thread-safe wrapper for upload_file function"""
     try:
-        print(f"[THREAD] Uploading file {file_id}...")
         result = upload_file(
             file_info=file_info,
             instance_name=instance_name,
             auth_token=auth_token,
             file_type='image',
         )
-        print(f"[THREAD] Uploaded file {file_id}")
         return file_id, result
     except Exception as e:
         print(f"[ERROR] [Thread] Error uploading file {file_id}: {e}")
@@ -108,15 +105,8 @@ def upload_file_threaded(file_id: int, file_info: tuple, instance_name: str, aut
 def create_scan_threaded(scan_data: dict, source_scan_id: int, instance_name: str, auth_token: str) -> tuple[int, str]:
     """Thread-safe wrapper for create_scan function with better error handling"""
     try:
-        print(f"[THREAD] Creating scan for source {source_scan_id}...")
-        # Log the data being sent for debugging (only keys to avoid spam)
-        print(f"[THREAD] Scan data keys: {list(scan_data.keys())}")
-        
-        # Add a small delay between requests to avoid overwhelming the API
-        time.sleep(0.5)
-        
+        # Removed verbose logging to improve performance
         result = create_scan(data=scan_data, instance_name=instance_name, auth_token=auth_token)
-        print(f"[THREAD] Created scan {result} for source {source_scan_id}")
         return source_scan_id, result
     except requests.exceptions.Timeout as e:
         print(f"[ERROR] [Thread] Timeout creating scan for source {source_scan_id}: {e}")
@@ -178,12 +168,13 @@ def download_file(file_id: int, *, instance_name: str, auth_token: str) -> tuple
     response = requests.get(
         f'https://{instance_name}.rebotics.net/api/v1/master-data/file-upload/{file_id}/',
         headers={'Authorization': f'Token {auth_token}'},
+        timeout=60  # Increased timeout for large file downloads
     )
     response.raise_for_status()
     raw_data = response.json()
     file_url, file_name = raw_data['file'], raw_data['original_filename']
 
-    response = requests.get(file_url)
+    response = requests.get(file_url, timeout=120)  # Increased timeout for actual file download
     response.raise_for_status()
 
     return file_name, response.content
@@ -195,6 +186,7 @@ def upload_file(*, file_info: tuple, file_type: str, instance_name: str, auth_to
         files={'file': file_info},
         data={'input_type': file_type},
         headers={'Authorization': f'Token {auth_token}'},
+        timeout=120  # Increased timeout for large file uploads
     )
     response.raise_for_status()
 
@@ -206,11 +198,257 @@ def create_scan(data: dict, *, instance_name: str, auth_token: str) -> str:
         f'https://{instance_name}.rebotics.net/api/v4/processing/actions/',
         headers={'Authorization': f'Token {auth_token}'},
         json=data,
-        timeout=30  # Add 30-second timeout
+        timeout=60  # Increased timeout for large batches
     )
-    print(data, response.json())
+    # Removed verbose debug print to improve performance
     response.raise_for_status()
     return response.json()['id']
+
+def save_checkpoint(checkpoint_file: str, completed_batches: set, scan_mapping: list, failed_scans: int) -> None:
+    """Save progress checkpoint to file"""
+    checkpoint_data = {
+        'completed_batches': list(completed_batches),
+        'scan_mapping': scan_mapping,
+        'failed_scans': failed_scans,
+        'timestamp': datetime.datetime.now().isoformat()
+    }
+    try:
+        with open(checkpoint_file, 'w', encoding='utf-8') as f:
+            json.dump(checkpoint_data, f, indent=2)
+    except Exception as e:
+        print(f"[WARNING] Failed to save checkpoint: {e}")
+
+def load_checkpoint(checkpoint_file: str) -> tuple[set, list, int]:
+    """Load progress checkpoint from file"""
+    if not os.path.exists(checkpoint_file):
+        return set(), [], 0
+    
+    try:
+        with open(checkpoint_file, 'r', encoding='utf-8') as f:
+            checkpoint_data = json.load(f)
+        completed_batches = set(checkpoint_data.get('completed_batches', []))
+        scan_mapping = checkpoint_data.get('scan_mapping', [])
+        failed_scans = checkpoint_data.get('failed_scans', 0)
+        print(f"[CHECKPOINT] Loaded checkpoint: {len(completed_batches)} batches completed, {len(scan_mapping)} scans mapped, {failed_scans} failed")
+        return completed_batches, scan_mapping, failed_scans
+    except Exception as e:
+        print(f"[WARNING] Failed to load checkpoint: {e}, starting fresh")
+        return set(), [], 0
+
+def process_batch_with_retry(
+    batch_number: int,
+    batch_scans: list,
+    batch_start: int,
+    total_scans: int,
+    from_instance: str,
+    to_instance: str,
+    auth_token_1: str,
+    auth_token_2: str,
+    target_store_id: int,
+    captured_at: int,
+    max_batch_retries: int = 3
+) -> tuple[list, list, int]:
+    """
+    Process a single batch with retry logic.
+    Returns: (new_scan_ids, scan_mapping, failed_scans)
+    """
+    batch_count = len(batch_scans)
+    
+    for retry_attempt in range(max_batch_retries + 1):
+        if retry_attempt > 0:
+            print(f"[BATCH {batch_number}] Retry attempt {retry_attempt}/{max_batch_retries}")
+            time.sleep(5 * retry_attempt)  # Exponential backoff between retries
+        
+        try:
+            # ---------------------------
+            # Download files for this batch
+            # ---------------------------
+            downloaded_files_map = {}
+            file_ids_to_download = list({scan_file['file_id'] for scan_info in batch_scans for scan_file in scan_info['scan_files']})
+            
+            if not file_ids_to_download:
+                print(f"[BATCH {batch_number}] No files to download (skipping download/upload stage)", flush=True)
+            else:
+                print(f"[BATCH {batch_number}] Starting download of {len(file_ids_to_download)} files", flush=True)
+                max_workers = min(20, len(file_ids_to_download))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    download_futures = {
+                        executor.submit(download_file_threaded, file_id, from_instance, auth_token_1): file_id 
+                        for file_id in file_ids_to_download
+                    }
+                    
+                    completed_downloads = 0
+                    for future in as_completed(download_futures):
+                        try:
+                            file_id, file_info = future.result()
+                            downloaded_files_map[file_id] = file_info
+                            completed_downloads += 1
+                            if completed_downloads % max(1, min(50, len(file_ids_to_download) // 10)) == 0 or completed_downloads == len(file_ids_to_download):
+                                print(f"[BATCH {batch_number}] [DOWNLOAD] {completed_downloads}/{len(file_ids_to_download)} ({completed_downloads*100//len(file_ids_to_download)}%)")
+                        except Exception as e:
+                            file_id = download_futures[future]
+                            print(f"[BATCH {batch_number}] [ERROR] Failed to download file {file_id}: {e}")
+                            if retry_attempt == max_batch_retries:
+                                raise  # Re-raise on final attempt
+                
+                print(f"[BATCH {batch_number}] Downloaded {len(downloaded_files_map)}/{len(file_ids_to_download)} files", flush=True)
+                
+                # Check if we have enough files downloaded
+                if len(downloaded_files_map) < len(file_ids_to_download) * 0.8:  # Less than 80% success
+                    if retry_attempt < max_batch_retries:
+                        print(f"[BATCH {batch_number}] Too many download failures, retrying batch...")
+                        continue
+                    else:
+                        print(f"[BATCH {batch_number}] Too many download failures after {max_batch_retries} retries, continuing with available files")
+            
+            # ---------------------------
+            # Upload files for this batch
+            # ---------------------------
+            uploaded_files_map = {}
+            if downloaded_files_map:
+                print(f"[BATCH {batch_number}] Starting upload of {len(downloaded_files_map)} files", flush=True)
+                max_workers = min(20, len(downloaded_files_map))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    upload_futures = {
+                        executor.submit(upload_file_threaded, file_id, file_info, to_instance, auth_token_2): file_id 
+                        for file_id, file_info in downloaded_files_map.items()
+                    }
+                    
+                    completed_uploads = 0
+                    for future in as_completed(upload_futures):
+                        try:
+                            file_id, upload_id = future.result()
+                            uploaded_files_map[file_id] = upload_id
+                            completed_uploads += 1
+                            if completed_uploads % max(1, min(50, len(downloaded_files_map) // 10)) == 0 or completed_uploads == len(downloaded_files_map):
+                                print(f"[BATCH {batch_number}] [UPLOAD] {completed_uploads}/{len(downloaded_files_map)} ({completed_uploads*100//len(downloaded_files_map)}%)")
+                        except Exception as e:
+                            file_id = upload_futures[future]
+                            print(f"[BATCH {batch_number}] [ERROR] Failed to upload file {file_id}: {e}")
+                            if retry_attempt == max_batch_retries:
+                                raise  # Re-raise on final attempt
+                
+                print(f"[BATCH {batch_number}] Uploaded {len(uploaded_files_map)}/{len(downloaded_files_map)} files", flush=True)
+                
+                # Check if we have enough files uploaded
+                if len(uploaded_files_map) < len(downloaded_files_map) * 0.8:  # Less than 80% success
+                    if retry_attempt < max_batch_retries:
+                        print(f"[BATCH {batch_number}] Too many upload failures, retrying batch...")
+                        continue
+                    else:
+                        print(f"[BATCH {batch_number}] Too many upload failures after {max_batch_retries} retries, continuing with available files")
+            else:
+                print(f"[BATCH {batch_number}] Skipping upload stage (no downloaded files)")
+            
+            # ---------------------------
+            # Prepare scan data for this batch
+            # ---------------------------
+            scan_data_list = []
+            for scan_info in batch_scans:
+                source_scan_id = scan_info['id']
+                data = deepcopy(scan_info['provided_values']['_raw_data'])
+                
+                fields_to_remove = ['category_id', 'section_id', 'store_planogram', 'aisle', 'task_id', 'replace_id']
+                for field in fields_to_remove:
+                    if field in data:
+                        del data[field]
+                
+                data['store'] = target_store_id
+                data['files'] = [uploaded_files_map.get(scan_file['file_id']) for scan_file in scan_info['scan_files']]
+                data['files'] = [file_id for file_id in data['files'] if file_id]  # Filter out missing uploads
+                data['captured_at'] = captured_at
+                
+                additional_fields_to_remove = ['id', 'created_at', 'updated_at']
+                for field in additional_fields_to_remove:
+                    if field in data:
+                        del data[field]
+                
+                if not data['files']:
+                    print(f"[BATCH {batch_number}] [WARNING] No files available for source scan {source_scan_id}, skipping scan creation")
+                    continue
+                
+                scan_data_list.append((source_scan_id, data))
+            
+            if not scan_data_list:
+                print(f"[BATCH {batch_number}] No scan data available to create scans")
+                return [], [], 0
+            
+            # ---------------------------
+            # Create new scans for this batch
+            # ---------------------------
+            print(f"[BATCH {batch_number}] Creating {len(scan_data_list)} scans", flush=True)
+            max_workers = min(15, len(scan_data_list))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                scan_futures = {
+                    executor.submit(create_scan_threaded, data, source_scan_id, to_instance, auth_token_2): source_scan_id 
+                    for source_scan_id, data in scan_data_list
+                }
+                
+                completed_scans = 0
+                failed_scans = 0
+                batch_new_scan_ids = []
+                batch_scan_mapping = []
+                start_time = time.time()
+                last_progress_time = start_time
+                
+                for future in as_completed(scan_futures):
+                    try:
+                        source_scan_id, new_scan_id = future.result()
+                        batch_new_scan_ids.append(new_scan_id)
+                        batch_scan_mapping.append((source_scan_id, new_scan_id))
+                        completed_scans += 1
+                        elapsed_time = time.time() - start_time
+                        
+                        should_print = (
+                            completed_scans % max(1, min(25, len(scan_data_list) // 10)) == 0 or 
+                            completed_scans == len(scan_data_list) or
+                            (time.time() - last_progress_time) >= 60
+                        )
+                        
+                        if should_print:
+                            last_progress_time = time.time()
+                            avg_time_per_scan = elapsed_time / completed_scans if completed_scans > 0 else 0
+                            remaining_scans = len(scan_data_list) - completed_scans
+                            estimated_remaining_time = avg_time_per_scan * remaining_scans if avg_time_per_scan > 0 else 0
+                            print(f"[BATCH {batch_number}] [SCAN] {completed_scans}/{len(scan_data_list)} ({completed_scans*100//len(scan_data_list)}%) | Elapsed: {elapsed_time:.1f}s | Est. remaining: {estimated_remaining_time:.1f}s")
+                            
+                    except Exception as e:
+                        source_scan_id = scan_futures[future]
+                        failed_scans += 1
+                        print(f"[BATCH {batch_number}] [ERROR] Failed to create scan for source {source_scan_id}: {e}")
+                        if failed_scans > len(scan_data_list) * 0.5:
+                            print(f"[BATCH {batch_number}] [ERROR] Too many failures ({failed_scans}) in this batch")
+                            if retry_attempt < max_batch_retries:
+                                print(f"[BATCH {batch_number}] Retrying batch...")
+                                break  # Break out of future processing, will retry
+                            else:
+                                # Cancel remaining futures on final attempt
+                                for f in scan_futures:
+                                    if not f.done():
+                                        f.cancel()
+                                break
+            
+            # Check if batch was successful enough
+            success_rate = completed_scans / len(scan_data_list) if scan_data_list else 0
+            if success_rate < 0.5 and retry_attempt < max_batch_retries:
+                print(f"[BATCH {batch_number}] Low success rate ({success_rate*100:.1f}%), retrying batch...")
+                continue
+            
+            # Batch completed successfully (or on final retry)
+            print(f"[BATCH {batch_number}] Completed scan creation for this batch (success: {completed_scans}, failed: {failed_scans})", flush=True)
+            return batch_new_scan_ids, batch_scan_mapping, failed_scans
+            
+        except Exception as e:
+            print(f"[BATCH {batch_number}] [ERROR] Batch processing failed: {e}")
+            if retry_attempt < max_batch_retries:
+                print(f"[BATCH {batch_number}] Will retry batch...")
+                continue
+            else:
+                print(f"[BATCH {batch_number}] Max retries exceeded, skipping batch")
+                return [], [], len(batch_scans)  # All scans in batch failed
+    
+    # Should never reach here, but just in case
+    return [], [], len(batch_scans)
 
 def run(*,
         from_instance: str,
@@ -224,149 +462,113 @@ def run(*,
         scan_ids_for_copying: typing.Sequence[int],
         captured_at:int,
         target_store_id: int,
-        output_folder: str = None) -> None:
+        output_folder: str = None,
+        batch_retries: int = 3,
+        resume: bool = True) -> None:
     try:
-        print('Obtaining tokens...')
+        print('Obtaining tokens...', flush=True)
         _, auth_token_1 = get_auth_token(from_instance, source_username, source_password)
-        print(f"Auth token 1 obtained for {from_instance}")
+        print(f"Auth token 1 obtained for {from_instance}", flush=True)
         _, auth_token_2 = get_auth_token(to_instance, target_username, target_password)
-        print(f"Auth token 2 obtained for {to_instance}")
+        print(f"Auth token 2 obtained for {to_instance}", flush=True)
 
-        print('Getting info about scans...')
+        print('Getting info about scans...', flush=True)
         scans_info = get_info_about_scans(scan_ids_for_copying, instance_name=from_instance, db_password=first_db_password)
-        print(f"Retrieved info for {len(scans_info)} scans")
+        print(f"Retrieved info for {len(scans_info)} scans", flush=True)
 
-        print('Downloading files with threading...')
-        downloaded_files_map = {}
+        total_scans = len(scans_info)
+        batch_size = 10
+        print(f"[BATCH] Processing scans in groups of {batch_size} (total scans: {total_scans})", flush=True)
+        print(f"[BATCH] Batch retries enabled: {batch_retries} attempts per batch", flush=True)
         
-        # Collect all file IDs to download
-        file_ids_to_download = []
-        for scan_info in scans_info:
-            for scan_file in scan_info['scan_files']:
-                file_ids_to_download.append(scan_file['file_id'])
+        # Setup checkpoint file
+        checkpoint_file = f"checkpoint_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        if resume:
+            print(f"[CHECKPOINT] Checkpoint file: {checkpoint_file}")
+            # Try to find existing checkpoint file
+            checkpoint_files = [f for f in os.listdir('.') if f.startswith('checkpoint_') and f.endswith('.json')]
+            if checkpoint_files:
+                # Use most recent checkpoint
+                checkpoint_file = max(checkpoint_files, key=os.path.getmtime)
+                print(f"[CHECKPOINT] Found existing checkpoint: {checkpoint_file}")
         
-        print(f"[DOWNLOAD] Starting download of {len(file_ids_to_download)} files using thread pool...")
+        # Load checkpoint if resuming
+        completed_batches = set()
+        scan_mapping = []
+        total_failed_scans = 0
+        if resume:
+            completed_batches, scan_mapping, total_failed_scans = load_checkpoint(checkpoint_file)
+            if completed_batches:
+                print(f"[RESUME] Resuming from batch {max(completed_batches) + 1}, {len(scan_mapping)} scans already completed")
         
-        # Use ThreadPoolExecutor for concurrent downloads
-        max_workers = min(5, len(file_ids_to_download))  # Limit to 5 concurrent downloads
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all download tasks
-            download_futures = {
-                executor.submit(download_file_threaded, file_id, from_instance, auth_token_1): file_id 
-                for file_id in file_ids_to_download
-            }
+        new_scan_ids = [mapping[1] for mapping in scan_mapping]  # Extract target scan IDs
+        
+        # Process batches
+        total_batches = (total_scans + batch_size - 1) // batch_size
+        for batch_start in range(0, total_scans, batch_size):
+            batch_number = (batch_start // batch_size) + 1
             
-            # Process completed downloads
-            completed_downloads = 0
-            for future in as_completed(download_futures):
-                try:
-                    file_id, file_info = future.result()
-                    downloaded_files_map[file_id] = file_info
-                    completed_downloads += 1
-                    print(f"[DOWNLOAD] Progress: {completed_downloads}/{len(file_ids_to_download)} files downloaded")
-                except Exception as e:
-                    file_id = download_futures[future]
-                    print(f"[ERROR] Failed to download file {file_id}: {e}")
-        
-        print(f"[SUCCESS] Downloaded {len(downloaded_files_map)} files successfully")
-
-        print('Uploading files with threading...')
-        uploaded_files_map = {}
-        
-        print(f"[UPLOAD] Starting upload of {len(downloaded_files_map)} files using thread pool...")
-        
-        # Use ThreadPoolExecutor for concurrent uploads
-        max_workers = min(5, len(downloaded_files_map))  # Limit to 5 concurrent uploads
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all upload tasks
-            upload_futures = {
-                executor.submit(upload_file_threaded, file_id, file_info, to_instance, auth_token_2): file_id 
-                for file_id, file_info in downloaded_files_map.items()
-            }
+            # Skip if batch already completed
+            if batch_number in completed_batches:
+                print(f"\n{'='*80}", flush=True)
+                print(f"[BATCH {batch_number}/{total_batches}] Already completed, skipping...", flush=True)
+                print(f"{'='*80}\n", flush=True)
+                continue
             
-            # Process completed uploads
-            completed_uploads = 0
-            for future in as_completed(upload_futures):
-                try:
-                    file_id, upload_id = future.result()
-                    uploaded_files_map[file_id] = upload_id
-                    completed_uploads += 1
-                    print(f"[UPLOAD] Progress: {completed_uploads}/{len(downloaded_files_map)} files uploaded")
-                except Exception as e:
-                    file_id = upload_futures[future]
-                    print(f"[ERROR] Failed to upload file {file_id}: {e}")
+            batch_scans = scans_info[batch_start:batch_start + batch_size]
+            batch_count = len(batch_scans)
+            
+            # Extract source scan IDs for this batch
+            batch_source_scan_ids = [scan_info['id'] for scan_info in batch_scans]
+            
+            # Print batch start with scan IDs
+            print(f"\n{'='*80}", flush=True)
+            print(f"[BATCH {batch_number}/{total_batches}] Starting batch {batch_number}", flush=True)
+            print(f"[BATCH {batch_number}/{total_batches}] Processing scans {batch_start + 1}-{batch_start + batch_count} of {total_scans}", flush=True)
+            print(f"[BATCH {batch_number}/{total_batches}] Source Scan IDs: {', '.join(map(str, batch_source_scan_ids))}", flush=True)
+            print(f"{'='*80}\n", flush=True)
+            
+            # Process batch with retry logic
+            batch_new_scan_ids, batch_scan_mapping, batch_failed = process_batch_with_retry(
+                batch_number=batch_number,
+                batch_scans=batch_scans,
+                batch_start=batch_start,
+                total_scans=total_scans,
+                from_instance=from_instance,
+                to_instance=to_instance,
+                auth_token_1=auth_token_1,
+                auth_token_2=auth_token_2,
+                target_store_id=target_store_id,
+                captured_at=captured_at,
+                max_batch_retries=batch_retries
+            )
+            
+            # Print batch completion summary
+            print(f"\n{'='*80}", flush=True)
+            print(f"[BATCH {batch_number}/{total_batches}] Batch {batch_number} completed", flush=True)
+            print(f"[BATCH {batch_number}/{total_batches}] Source Scan IDs: {', '.join(map(str, batch_source_scan_ids))}", flush=True)
+            if batch_new_scan_ids:
+                print(f"[BATCH {batch_number}/{total_batches}] Created Target Scan IDs: {', '.join(map(str, batch_new_scan_ids))}", flush=True)
+            else:
+                print(f"[BATCH {batch_number}/{total_batches}] No scans created in this batch", flush=True)
+            print(f"[BATCH {batch_number}/{total_batches}] Success: {len(batch_new_scan_ids)}, Failed: {batch_failed}", flush=True)
+            print(f"{'='*80}\n", flush=True)
+            
+            # Update results
+            new_scan_ids.extend(batch_new_scan_ids)
+            scan_mapping.extend(batch_scan_mapping)
+            total_failed_scans += batch_failed
+            
+            # Mark batch as completed and save checkpoint
+            completed_batches.add(batch_number)
+            save_checkpoint(checkpoint_file, completed_batches, scan_mapping, total_failed_scans)
+            print(f"[CHECKPOINT] Progress saved: {len(completed_batches)}/{total_batches} batches completed", flush=True)
         
-        print(f"[SUCCESS] Uploaded {len(uploaded_files_map)} files successfully")
-
-        print('Creating new scans with threading...')
-        new_scan_ids = []
-        scan_mapping = []  # List to store source_id -> target_id mapping
-        
-        # Prepare scan data for all scans
-        scan_data_list = []
-        for scan_info in scans_info:
-            source_scan_id = scan_info['id']
-            data = deepcopy(scan_info['provided_values']['_raw_data'])
-            
-            # Remove the specified fields from the data (including task_id to prevent 400 errors)
-            fields_to_remove = ['category_id', 'section_id', 'store_planogram', 'aisle', 'task_id', 'replace_id']
-            for field in fields_to_remove:
-                if field in data:
-                    del data[field]
-                    print(f"Removed field: {field}")
-            
-            data['store'] = target_store_id
-            data['files'] = [uploaded_files_map[scan_file['file_id']] for scan_file in scan_info['scan_files']]
-            data['captured_at'] = captured_at
-            
-            # Remove additional fields that might cause issues in target instance
-            additional_fields_to_remove = ['id', 'created_at', 'updated_at']
-            removed_additional_fields = []
-            for field in additional_fields_to_remove:
-                if field in data:
-                    removed_additional_fields.append(field)
-                    del data[field]
-            
-            if removed_additional_fields:
-                print(f"Removed additional fields from scan {source_scan_id}: {', '.join(removed_additional_fields)}")
-            
-            scan_data_list.append((source_scan_id, data))
-        
-        print(f"[SCAN] Starting creation of {len(scan_data_list)} scans using thread pool...")
-        
-        # Use ThreadPoolExecutor for concurrent scan creation with timeout handling
-        max_workers = min(2, len(scan_data_list))  # Reduce to 2 concurrent scan creations to avoid overwhelming the API
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all scan creation tasks
-            scan_futures = {
-                executor.submit(create_scan_threaded, data, source_scan_id, to_instance, auth_token_2): source_scan_id 
-                for source_scan_id, data in scan_data_list
-            }
-            
-            # Process completed scan creations with timeout handling
-            completed_scans = 0
-            failed_scans = 0
-            start_time = time.time()
-            
-            for future in as_completed(scan_futures, timeout=300):  # 5-minute total timeout
-                try:
-                    source_scan_id, new_scan_id = future.result(timeout=60)  # 1-minute timeout per scan
-                    new_scan_ids.append(new_scan_id)
-                    scan_mapping.append((source_scan_id, new_scan_id))
-                    completed_scans += 1
-                    elapsed_time = time.time() - start_time
-                    print(f"[SCAN] Progress: {completed_scans}/{len(scan_data_list)} scans created (Elapsed: {elapsed_time:.1f}s)")
-                except Exception as e:
-                    source_scan_id = scan_futures[future]
-                    failed_scans += 1
-                    print(f"[ERROR] Failed to create scan for source {source_scan_id}: {e}")
-                    if failed_scans > len(scan_data_list) * 0.5:  # If more than 50% fail, stop
-                        print(f"[ERROR] Too many failures ({failed_scans}), stopping execution")
-                        break
-        
-        print(f"[SUCCESS] Created {len(new_scan_ids)} scans successfully")
-        print(f"[STATS] Success rate: {len(new_scan_ids)}/{len(scan_data_list)} ({len(new_scan_ids)/len(scan_data_list)*100:.1f}%)")
-        print(f"[STATS] Failed scans: {failed_scans}")
+        print(f"[SUCCESS] Created {len(new_scan_ids)} scans successfully across all batches")
+        total_attempted_scans = total_scans - total_failed_scans
+        success_rate = (len(new_scan_ids) / total_attempted_scans * 100) if total_attempted_scans > 0 else 0
+        print(f"[STATS] Success rate: {len(new_scan_ids)}/{total_attempted_scans} ({success_rate:.1f}%)")
+        print(f"[STATS] Failed scans: {total_failed_scans}")
 
         if new_scan_ids:
             print('All new scans:', ', '.join(map(str, new_scan_ids)))
@@ -383,6 +585,15 @@ def run(*,
             writer.writerows(scan_mapping)
         
         print(f'CSV file created successfully: {csv_filename}')
+        
+        # Clean up checkpoint file on successful completion
+        if resume and os.path.exists(checkpoint_file):
+            try:
+                os.remove(checkpoint_file)
+                print(f'[CHECKPOINT] Cleaned up checkpoint file: {checkpoint_file}')
+            except Exception as e:
+                print(f'[WARNING] Could not remove checkpoint file: {e}')
+        
         print('Script completed successfully!')
         
     except Exception as e:

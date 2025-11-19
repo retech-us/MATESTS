@@ -25,6 +25,40 @@ class ScanCopySDK:
         self.scan_mapping = {}
         self.run_folder = None
         self.custom_results_path = None
+        self.checkpoint_prompt_shown = False
+
+    def handle_checkpoint_resume(self):
+        """Offer user the choice to resume from or restart without checkpoint."""
+        if self.checkpoint_prompt_shown:
+            return
+
+        checkpoint_files = glob.glob("checkpoint_*.json")
+        if not checkpoint_files:
+            return
+
+        latest_checkpoint = max(checkpoint_files, key=os.path.getmtime)
+        print("\n" + "=" * 80)
+        print("Checkpoint detected!")
+        print(f"Latest checkpoint file: {latest_checkpoint}")
+        print("You can resume from this checkpoint or restart from scratch.")
+
+        while True:
+            choice = input("Resume from checkpoint? (y = resume, n = restart): ").strip().lower()
+            if choice in ("y", "yes"):
+                print("✅ Resuming from existing checkpoint...\n")
+                self.checkpoint_prompt_shown = True
+                return
+            if choice in ("n", "no"):
+                print("🔁 Restarting from scratch. Removing checkpoint files...")
+                for cp in checkpoint_files:
+                    try:
+                        os.remove(cp)
+                        print(f"🗑️  Removed {cp}")
+                    except Exception as e:
+                        print(f"⚠️  Could not remove {cp}: {e}")
+                self.checkpoint_prompt_shown = True
+                return
+            print("Please enter 'y' to resume or 'n' to restart.")
     
     def create_results_folder(self):
         """Create a timestamped folder for this run's results"""
@@ -523,16 +557,53 @@ class ScanCopySDK:
         # Update config with current values
         self.update_config_with_current_values()
         
+        # Prompt user about checkpoint resume/restart if applicable
+        self.handle_checkpoint_resume()
+
         # Run the selected script
         try:
             print(f"\n🔄 Running {script_name}...")
-            result = subprocess.run([sys.executable, script_name], 
-                                  capture_output=True, text=True, timeout=300)
+            print("=" * 80)
             
-            if result.returncode == 0:
+            # Use Popen to stream output in real-time instead of buffering
+            process = subprocess.Popen(
+                [sys.executable, script_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True
+            )
+            
+            # Stream output in real-time with timeout handling
+            output_lines = []
+            import threading
+            import time
+            
+            def read_output():
+                for line in process.stdout:
+                    output_lines.append(line)
+                    print(line, end='', flush=True)
+            
+            # Start output reading thread
+            output_thread = threading.Thread(target=read_output, daemon=True)
+            output_thread.start()
+            
+            # Wait for process to complete with increased timeout (30 minutes for large batches)
+            start_time = time.time()
+            timeout_seconds = 1800  # 30 minutes
+            
+            while process.poll() is None:
+                if time.time() - start_time > timeout_seconds:
+                    raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+                time.sleep(0.1)  # Check every 100ms
+            
+            # Wait for output thread to finish reading remaining output
+            output_thread.join(timeout=5)
+            
+            if process.returncode == 0:
+                print("=" * 80)
                 print(f"✅ {script_name} completed successfully")
-                print("Output:")
-                print(result.stdout)
                 
                 # Move mapping file to run folder
                 self.move_mapping_file_to_run_folder()
@@ -541,16 +612,22 @@ class ScanCopySDK:
                 self.find_scan_mapping_csv()
                 return True
             else:
-                print(f"❌ {script_name} failed with return code {result.returncode}")
-                print("Error output:")
-                print(result.stderr)
+                print("=" * 80)
+                print(f"❌ {script_name} failed with return code {process.returncode}")
                 return False
                 
         except subprocess.TimeoutExpired:
-            print(f"❌ {script_name} timed out after 5 minutes")
+            print("=" * 80)
+            print(f"❌ {script_name} timed out after 30 minutes")
+            print("💡 Note: Progress has been saved to checkpoint file. You can resume by running again.")
+            if process:
+                process.kill()
             return False
         except Exception as e:
+            print("=" * 80)
             print(f"❌ Error running {script_name}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def step5_get_target_scan_ids(self):
