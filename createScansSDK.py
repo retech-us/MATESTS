@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Scan Copy SDK - Interactive tool for copying scans and generating analysis
+Create Scans SDK - Interactive tool for copying scans and generating analysis
 """
 
 import json
@@ -15,7 +15,7 @@ import config
 
 # Clipboard functionality removed as requested
 
-class ScanCopySDK:
+class CreateScansSDK:
     def __init__(self):
         self.config_file = "config.json"
         self.config = {}
@@ -533,6 +533,129 @@ class ScanCopySDK:
             except ValueError:
                 print("❌ Invalid input. Please enter a number only.")
     
+    def step4_5_download_scan_images(self):
+        """Step 4.5: Download scan images to folder"""
+        print("\n" + "=" * 60)
+        print("STEP 4.5: DOWNLOAD SCAN IMAGES")
+        print("=" * 60)
+        
+        # Ask user if they want to download images
+        while True:
+            choice = input("Do you want to download scan images? (y/n): ").strip().lower()
+            if choice in ['y', 'yes', 'n', 'no']:
+                break
+            print("❌ Please enter y or n")
+        
+        if choice in ['n', 'no']:
+            print("✅ Skipping image download")
+            return True
+        
+        # Get download folder path
+        print("\nChoose download folder:")
+        print("1. Use default: ./downloaded_images/")
+        print("2. Use custom path")
+        
+        while True:
+            folder_choice = input("Enter choice (1 or 2): ").strip()
+            if folder_choice == '1':
+                download_folder = os.path.join(os.getcwd(), "downloaded_images")
+                print(f"✅ Using default download folder: {download_folder}")
+                break
+            elif folder_choice == '2':
+                folder_path = input("Enter custom download folder path: ").strip()
+                if not folder_path:
+                    print("❌ Please enter a valid path")
+                    continue
+                try:
+                    # Convert to absolute path
+                    download_folder = os.path.abspath(folder_path)
+                    # Create folder if it doesn't exist
+                    os.makedirs(download_folder, exist_ok=True)
+                    print(f"✅ Using custom download folder: {download_folder}")
+                    break
+                except Exception as e:
+                    print(f"❌ Error with folder path: {e}")
+                    continue
+            else:
+                print("❌ Please enter 1 or 2")
+        
+        # Update config with current values
+        self.update_config_with_current_values()
+        
+        # Run the download script
+        script_name = "downloadScanImages.py"
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
+        
+        # Verify script exists
+        if not os.path.exists(script_path):
+            print(f"❌ Script not found: {script_path}")
+            return False
+        
+        try:
+            print(f"\n🔄 Running {script_name}...")
+            print(f"📄 Script path: {script_path}")
+            print("=" * 80)
+            
+            # Use Popen to stream output in real-time
+            # Pass download folder as command line argument
+            process = subprocess.Popen(
+                [sys.executable, script_path, '--download-folder', download_folder],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Stream output in real-time with timeout handling
+            output_lines = []
+            import threading
+            import time
+            
+            def read_output():
+                for line in process.stdout:
+                    output_lines.append(line)
+                    print(line, end='', flush=True)
+            
+            # Start output reading thread
+            output_thread = threading.Thread(target=read_output, daemon=True)
+            output_thread.start()
+            
+            # Wait for process to complete with timeout (30 minutes)
+            start_time = time.time()
+            timeout_seconds = 1800  # 30 minutes
+            
+            while process.poll() is None:
+                if time.time() - start_time > timeout_seconds:
+                    raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+                time.sleep(0.1)
+            
+            # Wait for output thread to finish
+            output_thread.join(timeout=5)
+            
+            if process.returncode == 0:
+                print("=" * 80)
+                print(f"✅ {script_name} completed successfully")
+                print(f"📁 Images downloaded to: {download_folder}")
+                return True
+            else:
+                print("=" * 80)
+                print(f"❌ {script_name} failed with return code {process.returncode}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("=" * 80)
+            print(f"❌ {script_name} timed out after 30 minutes")
+            if process:
+                process.kill()
+            return False
+        except Exception as e:
+            print("=" * 80)
+            print(f"❌ Error running {script_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
     def step4_run_copy_script(self):
         """Step 4: Run copy script and generate CSV"""
         print("\n" + "=" * 60)
@@ -541,7 +664,7 @@ class ScanCopySDK:
         
         # Ask user to choose script
         while True:
-            choice = input("Choose an option:\n1. copyScans.py\n2. copyScanUpdated.py\n3. Skip copy operation (mapping file already created)\nEnter choice (1, 2, or 3): ").strip()
+            choice = input("Choose an option:\n1. mappedScans.py\n2. autoScans.py\n3. Skip copy operation (mapping file already created)\nEnter choice (1, 2, or 3): ").strip()
             if choice in ['1', '2', '3']:
                 break
             print("❌ Please enter 1, 2, or 3")
@@ -551,7 +674,7 @@ class ScanCopySDK:
             print("📄 Using existing initial mapping file")
             return True
         
-        script_name = "copyScans.py" if choice == '1' else "copyScanUpdated.py"
+        script_name = "mappedScans.py" if choice == '1' else "autoScans.py"
         print(f"✅ Selected script: {script_name}")
         
         # Update config with current values
@@ -1246,9 +1369,157 @@ class ScanCopySDK:
             print(f"❌ Error creating Excel file: {e}")
             return None
     
-    def run(self):
-        """Run the complete SDK workflow"""
-        print("🚀 SCAN COPY SDK - Starting Workflow")
+    def step0_choose_functionality(self):
+        """Step 0: Choose which functionality to run"""
+        print("\n" + "=" * 60)
+        print("STEP 0: CHOOSE FUNCTIONALITY")
+        print("=" * 60)
+        print("\nAvailable functionalities:")
+        print("1. Copy Scan (mappedScans.py or autoScans.py)")
+        print("   - Copy scans from source to target")
+        print("   - Generate analysis reports")
+        print("2. Download Images (downloadScanImages.py)")
+        print("   - Download scan images with category and section naming")
+        print("   - No analysis reports")
+        
+        while True:
+            choice = input("\nSelect functionality (1 or 2): ").strip()
+            if choice == '1':
+                print("✅ Selected: Copy Scan")
+                return 'copy_scan'
+            elif choice == '2':
+                print("✅ Selected: Download Images")
+                return 'download_images'
+            else:
+                print("❌ Please enter 1 or 2")
+    
+    def run_download_images_workflow(self):
+        """Run the download images workflow (no analysis)"""
+        print("\n" + "=" * 60)
+        print("DOWNLOAD IMAGES WORKFLOW")
+        print("=" * 60)
+        
+        # Step 1: Configuration
+        if not self.step1_configuration():
+            return False
+        
+        # Step 2: Get source scan IDs
+        if not self.step2_get_source_scan_ids():
+            return False
+        
+        # Get download folder path
+        print("\nChoose download folder:")
+        print("1. Use default: ./downloaded_images/")
+        print("2. Use custom path")
+        
+        while True:
+            folder_choice = input("Enter choice (1 or 2): ").strip()
+            if folder_choice == '1':
+                download_folder = os.path.join(os.getcwd(), "downloaded_images")
+                print(f"✅ Using default download folder: {download_folder}")
+                break
+            elif folder_choice == '2':
+                folder_path = input("Enter custom download folder path: ").strip()
+                if not folder_path:
+                    print("❌ Please enter a valid path")
+                    continue
+                try:
+                    # Convert to absolute path
+                    download_folder = os.path.abspath(folder_path)
+                    # Create folder if it doesn't exist
+                    os.makedirs(download_folder, exist_ok=True)
+                    print(f"✅ Using custom download folder: {download_folder}")
+                    break
+                except Exception as e:
+                    print(f"❌ Error with folder path: {e}")
+                    continue
+            else:
+                print("❌ Please enter 1 or 2")
+        
+        # Update config with current values
+        self.update_config_with_current_values()
+        
+        # Run the download script
+        script_name = "downloadScanImages.py"
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
+        
+        # Verify script exists
+        if not os.path.exists(script_path):
+            print(f"❌ Script not found: {script_path}")
+            return False
+        
+        try:
+            print(f"\n🔄 Running {script_name}...")
+            print(f"📄 Script path: {script_path}")
+            print("=" * 80)
+            
+            # Use Popen to stream output in real-time
+            # Pass download folder as command line argument
+            process = subprocess.Popen(
+                [sys.executable, script_path, '--download-folder', download_folder],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Stream output in real-time with timeout handling
+            output_lines = []
+            import threading
+            import time
+            
+            def read_output():
+                for line in process.stdout:
+                    output_lines.append(line)
+                    print(line, end='', flush=True)
+            
+            # Start output reading thread
+            output_thread = threading.Thread(target=read_output, daemon=True)
+            output_thread.start()
+            
+            # Wait for process to complete with timeout (30 minutes)
+            start_time = time.time()
+            timeout_seconds = 1800  # 30 minutes
+            
+            while process.poll() is None:
+                if time.time() - start_time > timeout_seconds:
+                    raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+                time.sleep(0.1)
+            
+            # Wait for output thread to finish
+            output_thread.join(timeout=5)
+            
+            if process.returncode == 0:
+                print("=" * 80)
+                print(f"✅ {script_name} completed successfully")
+                print(f"📁 Images downloaded to: {download_folder}")
+                print("\n" + "=" * 60)
+                print("🎉 DOWNLOAD IMAGES WORKFLOW COMPLETED SUCCESSFULLY!")
+                print("=" * 60)
+                return True
+            else:
+                print("=" * 80)
+                print(f"❌ {script_name} failed with return code {process.returncode}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("=" * 80)
+            print(f"❌ {script_name} timed out after 30 minutes")
+            if process:
+                process.kill()
+            return False
+        except Exception as e:
+            print("=" * 80)
+            print(f"❌ Error running {script_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def run_copy_scan_workflow(self):
+        """Run the complete copy scan workflow (with analysis)"""
+        print("\n" + "=" * 60)
+        print("COPY SCAN WORKFLOW")
         print("=" * 60)
         
         # Step 1: Configuration
@@ -1276,6 +1547,28 @@ class ScanCopySDK:
         if not self.step4_run_copy_script():
             return False
         
+        # Step 4.5: Ask if user wants to run analysis
+        print("\n" + "=" * 60)
+        print("STEP 4.5: ANALYSIS OPTION")
+        print("=" * 60)
+        print("\nScan copying completed successfully!")
+        print("Would you like to run analysis on the copied scans?")
+        
+        while True:
+            choice = input("Run analysis? (y/n): ").strip().lower()
+            if choice in ['y', 'yes', 'n', 'no']:
+                break
+            print("❌ Please enter y or n")
+        
+        if choice in ['n', 'no']:
+            print("✅ Skipping analysis")
+            print("\n" + "=" * 60)
+            print("🎉 COPY SCAN WORKFLOW COMPLETED SUCCESSFULLY!")
+            print("=" * 60)
+            print("Scans have been copied successfully.")
+            print("Analysis was skipped as requested.")
+            return True
+        
         # Step 5: Get target scan IDs (auto-extract from mapping if available)
         if not self.step5_get_target_scan_ids():
             return False
@@ -1285,18 +1578,32 @@ class ScanCopySDK:
             return False
         
         print("\n" + "=" * 60)
-        print("🎉 WORKFLOW COMPLETED SUCCESSFULLY!")
+        print("🎉 COPY SCAN WORKFLOW COMPLETED SUCCESSFULLY!")
         print("=" * 60)
         print("Generated files:")
         print("- Source scan analysis CSV")
         print("- Target scan analysis CSV (if target scan IDs provided)")
-        print("- Combined scan mapping CSV")
-        
         return True
+    
+    def run(self):
+        """Run the SDK workflow - routes to appropriate functionality"""
+        print("🚀 SCAN COPY SDK - Starting Workflow")
+        print("=" * 60)
+        
+        # Step 0: Choose functionality
+        functionality = self.step0_choose_functionality()
+        
+        if functionality == 'copy_scan':
+            return self.run_copy_scan_workflow()
+        elif functionality == 'download_images':
+            return self.run_download_images_workflow()
+        else:
+            print("❌ Invalid functionality selection")
+            return False
 
 def main():
     """Main function"""
-    sdk = ScanCopySDK()
+    sdk = CreateScansSDK()
     success = sdk.run()
     
     if not success:
